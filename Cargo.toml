@@ -1,0 +1,11 @@
+[package]
+name = "pure_wav"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+defmt = { version = "1.0.1", optional = true }
+zerocopy = { version = "0.8.31", features = ["derive"] }
+
+[features]
+defmt = ["dep:defmt"]
