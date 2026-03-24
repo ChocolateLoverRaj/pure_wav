@@ -1,4 +1,5 @@
 #![no_std]
+pub use zerocopy;
 use zerocopy::{
     FromBytes, Immutable, KnownLayout,
     little_endian::{U16, U32},
@@ -194,8 +195,10 @@ pub struct GetMetaDataForI2s {
 impl GetMetaDataForI2s {
     /// Helps you pre-allocate memory for a read request
     pub const MAX_READ_LEN: usize = size_of::<FmtData>();
+}
 
-    pub fn new() -> Self {
+impl Default for GetMetaDataForI2s {
+    fn default() -> Self {
         Self {
             state: GetMetaDataForI2sState::ParseTopHeader,
         }

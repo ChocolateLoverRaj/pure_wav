@@ -1,11 +1,12 @@
 [package]
 name = "pure_wav"
-version = "0.1.0"
+description = "A library to parse .wav files"
+version = "1.0.0"
 edition = "2024"
+repository = "https://github.com/ChocolateLoverRaj/pure_wav"
+authors = ["Rajas Paranjpe"]
+license = "AGPL-3.0-or-later"
+categories = ["no-std", "embedded", "no-std::no-alloc", "multimedia::audio", "parsing"]
 
 [dependencies]
-defmt = { version = "1.0.1", optional = true }
 zerocopy = { version = "0.8.31", features = ["derive"] }
-
-[features]
-defmt = ["dep:defmt"]
