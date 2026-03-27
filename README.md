@@ -11,9 +11,19 @@ A Rust library to parse `.wav` files.
 - Great for playing wav files with I2S on microcontrollers
 
 ## Usage
-I designed the API to not have async or any kind of callbacks. It can be used no matter how you access the disk, but the API is currently very un-ergonomic. See https://github.com/ChocolateLoverRaj/rust-esp32c3-examples/blob/ca5ab80f178cc1bf08281818cf2877f046f00d45/sd_card_speaker/src/main.rs for example usage.
-
-To get the information necessary to use I2S, create a `GetMetaDataForI2s` with the `Default` trait. Then call the `output` method which will give you a `ReadRequest` telling you what part of the file needs to be read. Read that part of the file and then input it to the `input` method. Eventually you will get a `MetaDataForI2s` which has metadata as well as the range in the file which contains the actual data. Then you can stream the raw data from that range in the file.
+See the docs and the examples.
 
 ## Use cases
 - Streaming a file to play a wav file from an SD card
+
+## Test File
+`Warriyo, Laura Brehm - Mortals (feat. Laura Brehm) [NCS Release].mp3` downloaded from NCS and converted into `.wav` with `ffmpeg`.
+
+### Attribution
+Song: Warriyo - Mortals (feat. Laura Brehm) [NCS Release]
+
+Music provided by NoCopyrightSounds
+
+Free Download/Stream: http://ncs.io/mortals
+
+Watch: http://youtu.be/yJg-Y5byMMw

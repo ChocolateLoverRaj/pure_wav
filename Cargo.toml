@@ -1,7 +1,7 @@
 [package]
 name = "pure_wav"
 description = "A library to parse .wav files"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2024"
 repository = "https://github.com/ChocolateLoverRaj/pure_wav"
 authors = ["Rajas Paranjpe"]
@@ -9,4 +9,11 @@ license = "AGPL-3.0-or-later"
 categories = ["no-std", "embedded", "no-std::no-alloc", "multimedia::audio", "parsing"]
 
 [dependencies]
-zerocopy = { version = "0.8.31", features = ["derive"] }
+pure_riff = "1.0.0"
+zerocopy = { version = "0.8.47", features = ["derive"] }
+
+[dev-dependencies]
+rodio = { version = "0.22.2", default-features = true, features = ["64bit", "playback"] }
+
+[patch.crates-io]
+cpal = { git = "https://github.com/RustAudio/cpal" }

@@ -1,31 +1,14 @@
 #![no_std]
+pub use pure_riff;
+use pure_riff::{
+    BUFFER_LEN, Id, ParseChunkOutput, RiffChunkHeader, SUB_CHUNKS_OFFSET, parse_chunk,
+};
 pub use zerocopy;
 use zerocopy::{
     FromBytes, Immutable, KnownLayout,
     little_endian::{U16, U32},
     transmute_ref,
 };
-
-#[derive(Debug, Clone, Copy, FromBytes, Immutable, KnownLayout)]
-#[repr(C)]
-pub struct Header {
-    pub chunk_id: [u8; 4],
-    chunk_size: U32,
-}
-
-impl Header {
-    pub fn chunk_size(&self) -> u32 {
-        self.chunk_size.get()
-    }
-}
-
-// #[derive(Debug, Clone, Copy, FromBytes, Immutable, KnownLayout)]
-// #[repr(C)]
-// pub struct RiffData {
-//     pub wave_id: [u8; 4],
-// }
-
-pub type WaveId = [u8; 4];
 
 #[derive(Debug, Clone, Copy, FromBytes, Immutable, KnownLayout)]
 #[repr(C)]
@@ -36,293 +19,178 @@ pub struct FmtData {
     pub n_avg_bytes_per_sec: U32,
     pub n_block_align: U16,
     pub w_bits_per_sample: U16,
-    pub cb_size: U16,
-    pub w_valid_bits_per_sample: U16,
-    pub dw_channel_mask: [u8; 4],
-    pub sub_format: [u8; 16],
+    // pub cb_size: U16,
+    // pub w_valid_bits_per_sample: U16,
+    // pub dw_channel_mask: [u8; 4],
+    // pub sub_format: [u8; 16],
 }
 
-#[derive(Debug)]
-pub enum ParseTopHeaderError {
-    /// Expected chunk id: "RIFF". Contains actual chunk id.
-    UnexpectedChunkId([u8; 4]),
-    /// Expected wave id: "WAVE". Contains actual wave id.
-    UnexpectedWaveId(WaveId),
-}
-
-#[derive(Debug, Clone, Copy, FromBytes, Immutable, KnownLayout)]
-#[repr(C)]
-struct RiffHeaderWithWaveId {
-    header: Header,
-    wave_id: WaveId,
-}
-
-/// Read 12 bytes from the start of the file
-pub fn parse_top_header(
-    bytes: &[u8; size_of::<RiffHeaderWithWaveId>()],
-) -> Result<WaveFile, ParseTopHeaderError> {
-    let RiffHeaderWithWaveId { header, wave_id }: &RiffHeaderWithWaveId = transmute_ref!(bytes);
-    if &header.chunk_id == b"RIFF" {
-        if wave_id == b"WAVE" {
-            Ok(WaveFile {
-                chunk_size: header.chunk_size.get(),
-            })
-        } else {
-            Err(ParseTopHeaderError::UnexpectedWaveId(*wave_id))
-        }
-    } else {
-        Err(ParseTopHeaderError::UnexpectedChunkId(header.chunk_id))
-    }
-}
-
-#[derive(Debug)]
-pub struct WaveFile {
-    chunk_size: u32,
-}
-
-#[derive(Debug)]
-pub enum GetChunkHeaderAddressError {
-    /// There should be one more chunk, but it wouldn't fit
-    IncompleteChunkHeader,
-}
-
-pub struct ChunkInfo {
-    /// Address within the data of the top chunk
-    address: u32,
-    size: u32,
-}
-
-impl WaveFile {
-    /// Get the address (within the **file**) of the chunk info for the next chunk.
-    /// If `None` is returned, that means there is no next chunk.
-    pub fn get_chunk_header_address(
-        &self,
-        previous_chunk: Option<ChunkInfo>,
-    ) -> Result<Option<u32>, GetChunkHeaderAddressError> {
-        let next_chunk_address = if let Some(previous_chunk) = previous_chunk {
-            previous_chunk.address + size_of::<Header>() as u32 + previous_chunk.size
-        } else {
-            0
-        };
-        let remaining_data = self.chunk_size - size_of::<WaveId>() as u32 - next_chunk_address;
-        if remaining_data == 0 {
-            Ok(None)
-        } else if remaining_data > size_of::<Header>() as u32 {
-            Ok(Some(
-                size_of::<RiffHeaderWithWaveId>() as u32 + next_chunk_address,
-            ))
-        } else {
-            Err(GetChunkHeaderAddressError::IncompleteChunkHeader)
-        }
-    }
-
-    pub fn get_chunk_info(address: u32, header: &Header) -> ChunkInfo {
-        ChunkInfo {
-            address: address - size_of::<RiffHeaderWithWaveId>() as u32,
-            size: header.chunk_size(),
-        }
-    }
-}
-
-pub trait StateMachine {
-    type Input<'a>;
-    type Output;
-
-    fn output(&self) -> Self::Output;
-    fn input(&mut self, input: Self::Input<'_>);
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct MetaDataForI2s {
-    pub fmt_data: FmtData,
-    pub data_address: u32,
-    pub data_size: u32,
-}
-
-#[derive(Debug)]
-pub struct ReadRequest {
-    pub address: u32,
-    pub size: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum GetMetaDataForI2sError {
-    /// Expected chunk id: "RIFF". Contains actual chunk id.
-    UnexpectedChunkId([u8; 4]),
-    /// Expected wave id: "WAVE". Contains actual wave id.
-    UnexpectedWaveId(WaveId),
-    /// There should be one more chunk, but it wouldn't fit
-    IncompleteChunkHeader,
-    /// The file did not contain both the `fmt` and `data` chunks, which are needed
-    MissingChunks,
-}
-
-#[derive(Debug)]
-pub enum GetMetaDataForI2sOutput {
-    Done(Result<MetaDataForI2s, GetMetaDataForI2sError>),
-    Read(ReadRequest),
-}
-
-#[derive(Debug)]
-enum ReadFmtState {
-    ScanningForChunk,
-    /// We just detected that the current chunk is a `fmt` chunk
-    ReadCurrentChunk {
-        current_chunk_size: u32,
+enum ParseStage {
+    ReadRiff,
+    ReadFmt {
+        sub_chunks_len: u32,
+        position_in_sub_chunks: u32,
     },
-    ReadFmtData(FmtData),
-}
-
-enum GetMetaDataForI2sState {
-    ParseTopHeader,
-    GetChunks {
-        top_header_size: u32,
-        current_address_within_data: u32,
-        fmt: ReadFmtState,
-        /// address within data, size
-        data: Option<(u32, u32)>,
+    ReadData {
+        sub_chunks_len: u32,
+        position_in_sub_chunks: u32,
+        fmt_data: FmtData,
     },
-    Done(Result<MetaDataForI2s, GetMetaDataForI2sError>),
 }
 
-/// - Make sure the file is a wave file.
-/// - Get the `fmt` chunk, which tells you information like the samples per second
-/// - Get the address and length of the actual `data` chunk
-pub struct GetMetaDataForI2s {
-    state: GetMetaDataForI2sState,
+pub struct Parser {
+    stage: ParseStage,
 }
 
-impl GetMetaDataForI2s {
-    /// Helps you pre-allocate memory for a read request
-    pub const MAX_READ_LEN: usize = size_of::<FmtData>();
-}
-
-impl Default for GetMetaDataForI2s {
+impl Default for Parser {
     fn default() -> Self {
         Self {
-            state: GetMetaDataForI2sState::ParseTopHeader,
+            stage: ParseStage::ReadRiff,
         }
     }
 }
 
-impl StateMachine for GetMetaDataForI2s {
-    type Output = GetMetaDataForI2sOutput;
-    type Input<'a> = &'a [u8];
+#[derive(Debug)]
+pub enum Error {
+    /// Expected chunk id: "RIFF". Contains actual chunk id.
+    UnexpectedChunkId(Id),
+    /// Invalid RIFF format
+    InvalidRiff,
+    /// Expected container id: "WAVE". Contains actual container id.
+    UnexpectedContainerId(Id),
+    FmtDataTooSmall(u32),
+}
 
-    fn output(&self) -> Self::Output {
-        match &self.state {
-            GetMetaDataForI2sState::ParseTopHeader => GetMetaDataForI2sOutput::Read(ReadRequest {
-                address: 0,
-                size: size_of::<RiffHeaderWithWaveId>() as u32,
-            }),
-            GetMetaDataForI2sState::GetChunks {
-                top_header_size: _,
-                current_address_within_data,
-                fmt,
-                data: _,
-            } => GetMetaDataForI2sOutput::Read(match fmt {
-                ReadFmtState::ReadCurrentChunk {
-                    current_chunk_size: _,
-                } => ReadRequest {
-                    address: size_of::<RiffHeaderWithWaveId>() as u32 + size_of::<Header>() as u32,
-                    size: size_of::<FmtData>() as u32,
-                },
-                _ => ReadRequest {
-                    address: size_of::<RiffHeaderWithWaveId>() as u32
-                        + *current_address_within_data,
-                    size: size_of::<Header>() as u32,
-                },
-            }),
-            GetMetaDataForI2sState::Done(result) => GetMetaDataForI2sOutput::Done(*result),
+#[derive(Debug)]
+pub struct ReadInstruction {
+    pub position: u32,
+    pub len: u32,
+}
+
+#[derive(Debug)]
+pub struct WavMetaData {
+    pub fmt: FmtData,
+    pub data_position: u32,
+    pub data_len: u32,
+}
+
+pub enum ProcessDataOutput {
+    Done(WavMetaData),
+    InProgress(Parser),
+}
+
+impl Parser {
+    pub const MAX_BUFFER_LEN: usize = size_of::<RiffChunkHeader>() + size_of::<FmtData>();
+
+    pub fn read_instruction(&self) -> ReadInstruction {
+        match &self.stage {
+            ParseStage::ReadRiff => ReadInstruction {
+                position: 0,
+                len: size_of::<RiffChunkHeader>().try_into().unwrap(),
+            },
+            ParseStage::ReadFmt {
+                sub_chunks_len: _sub_chunks_len,
+                position_in_sub_chunks,
+            } => ReadInstruction {
+                position: SUB_CHUNKS_OFFSET + position_in_sub_chunks,
+                len: (size_of::<RiffChunkHeader>() + size_of::<FmtData>())
+                    .try_into()
+                    .unwrap(),
+            },
+            ParseStage::ReadData {
+                sub_chunks_len: _sub_chunks_len,
+                position_in_sub_chunks,
+                fmt_data: _fmt_data,
+            } => ReadInstruction {
+                position: SUB_CHUNKS_OFFSET + position_in_sub_chunks,
+                len: size_of::<RiffChunkHeader>().try_into().unwrap(),
+            },
         }
     }
 
-    fn input(&mut self, input: Self::Input<'_>) {
-        match &mut self.state {
-            GetMetaDataForI2sState::ParseTopHeader => {
-                let RiffHeaderWithWaveId { header, wave_id }: &RiffHeaderWithWaveId = transmute_ref!(
-                    <&[u8; size_of::<RiffHeaderWithWaveId>()]>::try_from(input).unwrap()
-                );
-                if &header.chunk_id == b"RIFF" {
-                    if wave_id == b"WAVE" {
-                        self.state = GetMetaDataForI2sState::GetChunks {
-                            top_header_size: header.chunk_size.get(),
-                            current_address_within_data: 0,
-                            fmt: ReadFmtState::ScanningForChunk,
-                            data: None,
-                        };
-                    } else {
-                        self.state = GetMetaDataForI2sState::Done(Err(
-                            GetMetaDataForI2sError::UnexpectedWaveId(*wave_id),
-                        ));
-                    }
-                } else {
-                    self.state = GetMetaDataForI2sState::Done(Err(
-                        GetMetaDataForI2sError::UnexpectedChunkId(header.chunk_id),
-                    ));
+    pub fn process_data(self, data: &[u8]) -> Result<ProcessDataOutput, Error> {
+        match self.stage {
+            ParseStage::ReadRiff => {
+                let data = <&[u8; size_of::<RiffChunkHeader>()]>::try_from(data).unwrap();
+                let riff_chunk: &RiffChunkHeader = transmute_ref!(data);
+                if &riff_chunk.chunk_id != b"RIFF" {
+                    return Err(Error::UnexpectedChunkId(riff_chunk.chunk_id));
                 }
+                let sub_chunks_len = riff_chunk
+                    .container_info()
+                    .unwrap()
+                    .map_err(|_| Error::InvalidRiff)?
+                    .sub_chunks_len;
+                Ok(ProcessDataOutput::InProgress(Self {
+                    stage: ParseStage::ReadFmt {
+                        sub_chunks_len,
+                        position_in_sub_chunks: 0,
+                    },
+                }))
             }
-            GetMetaDataForI2sState::GetChunks {
-                top_header_size: top_chunk_size,
-                current_address_within_data,
-                fmt,
-                data,
+            ParseStage::ReadFmt {
+                sub_chunks_len,
+                position_in_sub_chunks,
             } => {
-                let advance_chunk = match fmt {
-                    ReadFmtState::ReadCurrentChunk { current_chunk_size } => {
-                        let current_chunk_size = *current_chunk_size;
-                        *fmt = ReadFmtState::ReadFmtData(*transmute_ref!(
-                            <&[u8; size_of::<FmtData>()]>::try_from(input).unwrap()
-                        ));
-                        Some(current_chunk_size)
+                let ParseChunkOutput {
+                    parsed_chunk,
+                    next_chunk_relative_position,
+                } = parse_chunk(data[..BUFFER_LEN].try_into().unwrap());
+                if &parsed_chunk.chunk_id == b"fmt " {
+                    let fmt_data_len = parsed_chunk.chunk_len.get();
+                    if fmt_data_len < size_of::<FmtData>().try_into().unwrap() {
+                        return Err(Error::FmtDataTooSmall(fmt_data_len));
                     }
-                    _ => {
-                        let header: &Header =
-                            transmute_ref!(<&[u8; size_of::<Header>()]>::try_from(input).unwrap());
-                        match &header.chunk_id {
-                            b"fmt " => {
-                                *fmt = ReadFmtState::ReadCurrentChunk {
-                                    current_chunk_size: header.chunk_size.get(),
-                                };
-                                None
-                            }
-                            b"data" => {
-                                *data =
-                                    Some((*current_address_within_data, header.chunk_size.get()));
-                                Some(header.chunk_size.get())
-                            }
-                            _ => Some(header.chunk_size.get()),
-                        }
-                    }
-                };
-                if let ReadFmtState::ReadFmtData(fmt_data) = fmt
-                    && let Some((data_chunk_address, data_size)) = data
-                {
-                    self.state = GetMetaDataForI2sState::Done(Ok(MetaDataForI2s {
-                        fmt_data: *fmt_data,
-                        data_address: size_of::<RiffHeaderWithWaveId>() as u32
-                            + *data_chunk_address
-                            + size_of::<Header>() as u32,
-                        data_size: *data_size,
+                    let data = <&[u8; size_of::<FmtData>()]>::try_from(
+                        &data[size_of::<RiffChunkHeader>()..],
+                    )
+                    .unwrap();
+                    Ok(ProcessDataOutput::InProgress(Self {
+                        stage: ParseStage::ReadData {
+                            sub_chunks_len,
+                            position_in_sub_chunks: position_in_sub_chunks
+                                + next_chunk_relative_position,
+                            fmt_data: *transmute_ref!(data),
+                        },
                     }))
-                } else if let Some(current_chunk_size) = advance_chunk {
-                    let remaining_data =
-                        *top_chunk_size - size_of::<WaveId>() as u32 - *current_address_within_data;
-                    if remaining_data == 0 {
-                        self.state = GetMetaDataForI2sState::Done(Err(
-                            GetMetaDataForI2sError::MissingChunks,
-                        ));
-                    } else if remaining_data > size_of::<Header>() as u32 {
-                        *current_address_within_data +=
-                            size_of::<Header>() as u32 + current_chunk_size;
-                    } else {
-                        self.state = GetMetaDataForI2sState::Done(Err(
-                            GetMetaDataForI2sError::IncompleteChunkHeader,
-                        ));
-                    }
+                } else {
+                    Ok(ProcessDataOutput::InProgress(Self {
+                        stage: ParseStage::ReadFmt {
+                            sub_chunks_len,
+                            position_in_sub_chunks: position_in_sub_chunks
+                                + next_chunk_relative_position,
+                        },
+                    }))
                 }
             }
-            GetMetaDataForI2sState::Done(_) => unreachable!(),
+            ParseStage::ReadData {
+                sub_chunks_len,
+                position_in_sub_chunks,
+                fmt_data,
+            } => {
+                let ParseChunkOutput {
+                    parsed_chunk,
+                    next_chunk_relative_position,
+                } = parse_chunk(data.try_into().unwrap());
+                if &parsed_chunk.chunk_id == b"data" {
+                    Ok(ProcessDataOutput::Done(WavMetaData {
+                        fmt: fmt_data,
+                        data_position: SUB_CHUNKS_OFFSET
+                            + position_in_sub_chunks
+                            + u32::try_from(size_of::<RiffChunkHeader>()).unwrap(),
+                        data_len: parsed_chunk.chunk_len.get(),
+                    }))
+                } else {
+                    Ok(ProcessDataOutput::InProgress(Self {
+                        stage: ParseStage::ReadData {
+                            sub_chunks_len,
+                            position_in_sub_chunks: position_in_sub_chunks
+                                + next_chunk_relative_position,
+                            fmt_data,
+                        },
+                    }))
+                }
+            }
         }
     }
 }

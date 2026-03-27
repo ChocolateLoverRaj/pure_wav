@@ -28,7 +28,8 @@
             buildInputs = [
               rust-bin.stable.latest.default
               rust-analyzer
-              tinyxxd
+              pkg-config
+              alsa-lib
             ];
           };
       }
