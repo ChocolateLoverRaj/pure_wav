@@ -1,3 +1,25 @@
+//! # Usage
+//! Create a [`Parser`] with [`Parser::default`].
+//! Call [`Parser::read_instruction`] to get where in the file you need to read.
+//! Read the file.
+//! Call [`Parser::process_data`] with the data you read.
+//! In the end you will get meta data about the format of the samples and the location of teh
+//! samples themselves.
+//!
+//! # Handling untrusted data
+//! This library may ask you to read data outside of the range of the file / whatever is storing
+//! the WAVE. The meta data might point to a range outside of the file. It's your responsibility
+//! to validate those ranges if you want to.
+//!
+//! # The WAVE format
+//! See
+//! - <https://en.wikipedia.org/wiki/WAV#File_specifications>
+//! - <https://www.mmsp.ece.mcgill.ca/Documents/AudioFormats/WAVE/WAVE.html>
+//!
+//! Basically, a WAVE file is formatted with RIFF. There is a `fmt ` chunk that contains
+//! information such as the number of channels and bits per sample. There is a `data` chunk
+//! that contains the actual audio samples. There can also be other chunks to describe things like
+//! the artist and title of the song, but they are not needed for simply playing audio.
 #![no_std]
 pub use pure_riff;
 use pure_riff::{
@@ -19,19 +41,21 @@ pub struct FmtData {
     pub n_avg_bytes_per_sec: U32,
     pub n_block_align: U16,
     pub w_bits_per_sample: U16,
+    // The optional 20-byte version of this contains these fields
     // pub cb_size: U16,
     // pub w_valid_bits_per_sample: U16,
+    // The optional 40-byte version of this has these fields in addition to the 20-byte fields
     // pub dw_channel_mask: [u8; 4],
     // pub sub_format: [u8; 16],
 }
 
 enum ParseStage {
-    ReadRiff,
-    ReadFmt {
+    Riff,
+    Fmt {
         sub_chunks_len: u32,
         position_in_sub_chunks: u32,
     },
-    ReadData {
+    Data {
         sub_chunks_len: u32,
         position_in_sub_chunks: u32,
         fmt_data: FmtData,
@@ -45,7 +69,7 @@ pub struct Parser {
 impl Default for Parser {
     fn default() -> Self {
         Self {
-            stage: ParseStage::ReadRiff,
+            stage: ParseStage::Riff,
         }
     }
 }
@@ -84,11 +108,11 @@ impl Parser {
 
     pub fn read_instruction(&self) -> ReadInstruction {
         match &self.stage {
-            ParseStage::ReadRiff => ReadInstruction {
+            ParseStage::Riff => ReadInstruction {
                 position: 0,
                 len: size_of::<RiffChunkHeader>().try_into().unwrap(),
             },
-            ParseStage::ReadFmt {
+            ParseStage::Fmt {
                 sub_chunks_len: _sub_chunks_len,
                 position_in_sub_chunks,
             } => ReadInstruction {
@@ -97,7 +121,7 @@ impl Parser {
                     .try_into()
                     .unwrap(),
             },
-            ParseStage::ReadData {
+            ParseStage::Data {
                 sub_chunks_len: _sub_chunks_len,
                 position_in_sub_chunks,
                 fmt_data: _fmt_data,
@@ -110,7 +134,7 @@ impl Parser {
 
     pub fn process_data(self, data: &[u8]) -> Result<ProcessDataOutput, Error> {
         match self.stage {
-            ParseStage::ReadRiff => {
+            ParseStage::Riff => {
                 let data = <&[u8; size_of::<RiffChunkHeader>()]>::try_from(data).unwrap();
                 let riff_chunk: &RiffChunkHeader = transmute_ref!(data);
                 if &riff_chunk.chunk_id != b"RIFF" {
@@ -122,13 +146,13 @@ impl Parser {
                     .map_err(|_| Error::InvalidRiff)?
                     .sub_chunks_len;
                 Ok(ProcessDataOutput::InProgress(Self {
-                    stage: ParseStage::ReadFmt {
+                    stage: ParseStage::Fmt {
                         sub_chunks_len,
                         position_in_sub_chunks: 0,
                     },
                 }))
             }
-            ParseStage::ReadFmt {
+            ParseStage::Fmt {
                 sub_chunks_len,
                 position_in_sub_chunks,
             } => {
@@ -146,7 +170,7 @@ impl Parser {
                     )
                     .unwrap();
                     Ok(ProcessDataOutput::InProgress(Self {
-                        stage: ParseStage::ReadData {
+                        stage: ParseStage::Data {
                             sub_chunks_len,
                             position_in_sub_chunks: position_in_sub_chunks
                                 + next_chunk_relative_position,
@@ -155,7 +179,7 @@ impl Parser {
                     }))
                 } else {
                     Ok(ProcessDataOutput::InProgress(Self {
-                        stage: ParseStage::ReadFmt {
+                        stage: ParseStage::Fmt {
                             sub_chunks_len,
                             position_in_sub_chunks: position_in_sub_chunks
                                 + next_chunk_relative_position,
@@ -163,7 +187,7 @@ impl Parser {
                     }))
                 }
             }
-            ParseStage::ReadData {
+            ParseStage::Data {
                 sub_chunks_len,
                 position_in_sub_chunks,
                 fmt_data,
@@ -182,7 +206,7 @@ impl Parser {
                     }))
                 } else {
                     Ok(ProcessDataOutput::InProgress(Self {
-                        stage: ParseStage::ReadData {
+                        stage: ParseStage::Data {
                             sub_chunks_len,
                             position_in_sub_chunks: position_in_sub_chunks
                                 + next_chunk_relative_position,

@@ -6,7 +6,6 @@ use std::{
 
 use pure_wav::{Parser, ProcessDataOutput, ReadInstruction, WavMetaData};
 use rodio::{Player, Sample, Source};
-use zerocopy::IntoBytes;
 
 fn main() {
     let mut file =
@@ -19,7 +18,7 @@ fn main() {
             file.seek(SeekFrom::Start(position.into())).unwrap();
             let buffer = &mut buffer[..len.try_into().unwrap()];
             file.read_exact(buffer).unwrap();
-            match parser.process_data(&buffer).unwrap() {
+            match parser.process_data(buffer).unwrap() {
                 ProcessDataOutput::InProgress(next_parser) => {
                     parser = next_parser;
                 }
@@ -34,8 +33,6 @@ fn main() {
     let sink = rodio::DeviceSinkBuilder::open_default_sink().unwrap();
     let player = Player::connect_new(sink.mixer());
     player.append(source);
-    // let source = rodio::source::SineWave::new(440.0).take_duration(Duration::from_secs_f32(5.0));
-    // player.append(source);
     player.sleep_until_end();
     std::thread::sleep(Duration::from_secs(5));
 }
@@ -43,7 +40,7 @@ fn main() {
 struct WavSource {
     file: File,
     meta_data: WavMetaData,
-    buffer: u16,
+    buffer: [u8; 2],
     position: u32,
 }
 
@@ -94,9 +91,9 @@ impl Iterator for WavSource {
         if self.position == self.meta_data.data_len {
             return None;
         }
-        self.file.read_exact(self.buffer.as_mut_bytes()).unwrap();
+        self.file.read_exact(&mut self.buffer).unwrap();
         let sample = match self.meta_data.fmt.w_bits_per_sample.get() {
-            16 => self.buffer as f64 / u16::MAX as f64,
+            16 => i16::from_le_bytes(self.buffer) as f64 / i16::MAX as f64,
             _ => todo!(),
         };
         self.position += 2;
